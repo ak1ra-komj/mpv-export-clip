@@ -36,6 +36,9 @@ function export_loop_clip()
     local path = mp.get_property("path")
     if a and b then
         local outfile = slow_start()
+        -- -filter_complex scale=width:height (iw = input width, ih = input height).
+        -- Some codecs require the size of width and height to be a multiple of n.
+        -- You can achieve this by setting the width or height to -n, -2 确保输出高度为偶数
         local cmd = {
             "run",
             "ffmpeg",
@@ -48,7 +51,8 @@ function export_loop_clip()
             "-preset:v", "placebo",
             "-pix_fmt", "yuva420p",
             "-filter_complex", "scale=iw*min(1\\,min(1280/iw\\,720/ih)):-2",
-            "-an", "-sn",
+            "-an",
+            "-sn",
             "-map_metadata", "-1",
             "-v", "error",
             "-n",
@@ -73,7 +77,6 @@ mp.register_script_message("export-loop-clip", export_loop_clip)
 
 function set_ab_loop_a()
     local pos = mp.get_property_number("time-pos")
-    local a = mp.get_property_number("ab-loop-a")
     mp.set_property_number("ab-loop-a", pos)
     mp.osd_message('set A-B loop A: ' .. tostring(pos))
 end
