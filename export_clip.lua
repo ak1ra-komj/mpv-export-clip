@@ -1,7 +1,7 @@
 utils = require "mp.utils"
 
 -- test available filename
-function slow_start()
+function test_outfile()
     local basename = mp.get_property("filename"):gsub("%.([^%.]+)$", "")
     local screenshot_folder = mp.get_property("screenshot-directory") or ""
 
@@ -30,64 +30,17 @@ function slow_start()
     return filename(inc)
 end
 
-function export_loop_clip()
-    local a = mp.get_property_number("ab-loop-a")
-    local b = mp.get_property_number("ab-loop-b")
-    local path = mp.get_property("path")
-    if a and b then
-        local outfile = slow_start()
-        -- -filter_complex scale=width:height (iw = input width, ih = input height).
-        -- Some codecs require the size of width and height to be a multiple of n.
-        -- You can achieve this by setting the width or height to -n, -2 确保输出高度为偶数
-        local cmd = {
-            "run",
-            "ffmpeg",
-            "-ss", tostring(a),
-            "-i", path,
-            "-t", tostring(b-a),
-            "-c:v", "libx264",
-            -- "-b:v", "3000k",
-            "-crf", "21",
-            "-preset:v", "placebo",
-            "-pix_fmt", "yuva420p",
-            "-filter_complex", "scale=iw*min(1\\,min(1280/iw\\,720/ih)):-2",
-            "-an",
-            "-sn",
-            "-map_metadata", "-1",
-            "-v", "error",
-            "-n",
-            outfile
-        }
-        local args = {
-            args = cmd
-        }
-        function cb(success, result, error)
-            if success then
-                mp.msg.info("save clip " .. outfile)
-                mp.osd_message("save clip " .. outfile)
-            else
-                mp.msg.info(error)
-                mp.osd_message("export loop clip error: " .. error)
-            end
-        end
-        mp.command_native_async(cmd, cb)
-    end
-end
-mp.register_script_message("export-loop-clip", export_loop_clip)
-
 function set_ab_loop_a()
     local pos = mp.get_property_number("time-pos")
     mp.set_property_number("ab-loop-a", pos)
     mp.osd_message('set A-B loop A: ' .. tostring(pos))
 end
-mp.register_script_message("set-ab-loop-a", set_ab_loop_a)
 
 function set_ab_loop_b()
     local pos = mp.get_property_number("time-pos")
     mp.set_property_number("ab-loop-b", pos)
     mp.osd_message('set A-B loop B: ' .. tostring(pos))
 end
-mp.register_script_message("set-ab-loop-b", set_ab_loop_b)
 
 function seek_ab_loop_a()
     local pos = mp.get_property_number("ab-loop-a")
@@ -95,7 +48,6 @@ function seek_ab_loop_a()
         mp.set_property_number("time-pos", pos)
     end
 end
-mp.register_script_message("seek-ab-loop-a", seek_ab_loop_a)
 
 function seek_ab_loop_b()
     local pos = mp.get_property_number("ab-loop-b")
@@ -103,4 +55,86 @@ function seek_ab_loop_b()
         mp.set_property_number("time-pos", pos)
     end
 end
+
+function export_loop_clip()
+    local a = mp.get_property_number("ab-loop-a")
+    local b = mp.get_property_number("ab-loop-b")
+    local path = mp.get_property("path")
+    -- Get the track list
+    -- https://mpv.io/manual/master/#command-interface-track-list
+    local tracks = mp.get_property_native("track-list")
+    local sub_track = nil
+
+    -- Find the active subtitle track
+    for _, track in ipairs(tracks) do
+        if track.type == "sub" and track.selected then
+            sub_track = track
+            break
+        end
+    end
+
+    if a and b then
+        local infile = {}
+        local outfile = test_outfile()
+        local scale_filter = "scale=iw*min(1\\,min(1280/iw\\,720/ih)):-2"
+        local sub_filter = ""
+
+        if sub_track then
+            if sub_track.external then
+                local ext = string.match(sub_track["external-filename"], "%.([^%.]+)$")
+                local sub_file = mp.command_native({"expand-path", sub_track["external-filename"]})
+                table.insert(infile, "-i")
+                table.insert(infile, sub_file)
+
+                if ext == "srt" then
+                    sub_filter = "subtitles=" .. sub_file:gsub("\\", "\\\\")
+                elseif ext == "ass" then
+                    sub_filter = "ass=" .. sub_file:gsub("\\", "\\\\")
+                end
+            else
+                local codec = sub_track.codec
+                if codec == "subrip" then
+                    sub_filter = "subtitles=" .. path:gsub("\\", "\\\\") .. ":si=" .. tostring(sub_track["ff-index"])
+                elseif codec == "ass" then
+                    sub_filter = "ass=" .. path:gsub("\\", "\\\\") .. ":si=" .. tostring(sub_track["ff-index"])
+                end
+            end
+        end
+
+        local filter_complex = "[0:v]" .. scale_filter
+        if sub_filter ~= "" then
+            filter_complex = filter_complex .. "," .. sub_filter
+        end
+        filter_complex = filter_complex .. "[out]"
+
+        local cmd = {"run", "ffmpeg", "-nostdin", "-n", "-loglevel", "info", "-ss", tostring(a), "-i", path, "-t",
+                     tostring(b - a), "-c:v", "libx264", "-b:v", "3000k", "-crf", "21", "-preset", "placebo",
+                     "-pix_fmt", "yuva420p", "-map_metadata", "-1", "-filter_complex", filter_complex, "-map", "[out]",
+                     outfile}
+
+        -- intert external sub_file after -i path
+        local infile_pos = 11
+        for i = #infile, 1, -1 do
+            table.insert(cmd, infile_pos, infile[i])
+        end
+
+        mp.command_native_async(cmd, function(success, result, error)
+            if success then
+                mp.msg.info("mp.command_native_async cmd -> " .. table.concat(cmd, " "))
+                mp.msg.info("mp.command_native_async result -> " .. tostring(result))
+                mp.msg.info("save clip " .. outfile)
+                mp.osd_message("save clip " .. outfile)
+            else
+                mp.msg.info(error)
+                mp.osd_message("export loop clip error: " .. error)
+            end
+        end)
+    end
+end
+
+-- register_script_message
+mp.register_script_message("set-ab-loop-a", set_ab_loop_a)
+mp.register_script_message("set-ab-loop-b", set_ab_loop_b)
+mp.register_script_message("seek-ab-loop-a", seek_ab_loop_a)
 mp.register_script_message("seek-ab-loop-b", seek_ab_loop_b)
+mp.register_script_message("export-loop-clip", export_loop_clip)
